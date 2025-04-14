@@ -1,4 +1,4 @@
-# PASS: PASS: Peer-Agreement based Sample Selection for Training with Instance Dependent Noisy Labels
+# PASS: Peer-Agreement based Sample Selection for Training with Instance Dependent Noisy Labels
 
 This repository implements the Peer-Agreement based Sample Selection (PASS) method for training deep neural networks with noisy labels, as described in the paper: "PASS: Peer-Agreement based Sample Selection for Training with Instance Dependent Noisy Labels".
 
