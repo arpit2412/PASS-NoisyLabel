@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--num_class', default=10, type=int)
     parser.add_argument('--data_path', default='./data', type=str, help='path to dataset')
     parser.add_argument('--dataset', default='cifar10', type=str)
+    parser.add_argument('--use_pass', action='store_true', help='Use PASS (Peer Agreement based Sample Selection) method')
     args = parser.parse_args()
     
     # Set device
@@ -41,6 +42,11 @@ def main():
         os.makedirs('./checkpoint')
     
     # Run training
+    if args.use_pass:
+        print('Using PASS (Peer Agreement based Sample Selection) method')
+    else:
+        print('Using standard DivideMix method')
+    
     run_dividemix(args)
 
 if __name__ == '__main__':

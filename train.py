@@ -29,6 +29,7 @@ parser.add_argument('--gpuid', default=0, type=int)
 parser.add_argument('--num_class', default=10, type=int)
 parser.add_argument('--data_path', default='./data', type=str, help='path to dataset')
 parser.add_argument('--dataset', default='cifar10', type=str)
+parser.add_argument('--use_pass', action='store_true', help='Use PASS for sample selection')
 args = parser.parse_args()
 
 torch.cuda.set_device(args.gpuid)
@@ -38,7 +39,7 @@ torch.cuda.manual_seed_all(args.seed)
 
 
 # Training
-def train(epoch,net,net2,optimizer,labeled_trainloader,unlabeled_trainloader):
+def train(epoch, net, net2, optimizer, labeled_trainloader, unlabeled_trainloader):
     net.train()
     net2.eval() #fix one network and train the other
     
@@ -55,16 +56,6 @@ def train(epoch,net,net2,optimizer,labeled_trainloader,unlabeled_trainloader):
         # Fix the tensor type conversion to ensure it's on the same device
         w_x = w_x.view(-1,1).type(torch.FloatTensor).cuda()
         
-        # Add error handling for GMM fitting
-        try:
-            gmm = GaussianMixture(n_components=2, max_iter=10, tol=1e-2, reg_covar=5e-4)
-            gmm.fit(input_loss)
-            prob = gmm.predict_proba(input_loss) 
-            prob = prob[:,gmm.means_.argmin()]
-        except Exception as e:
-            print(f"GMM fitting failed: {e}")
-            # Fallback to a simple threshold
-            prob = 1.0 - (losses / losses.max())
         batch_size = inputs_x.size(0)
         
         # Transform label to one-hot
@@ -125,7 +116,7 @@ def train(epoch,net,net2,optimizer,labeled_trainloader,unlabeled_trainloader):
         pred_mean = torch.softmax(logits, dim=1).mean(0)
         penalty = torch.sum(prior*torch.log(prior/pred_mean))
 
-        loss = Lx + lamb * Lu  + penalty
+        loss = Lx + lamb * Lu + penalty
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
@@ -136,7 +127,7 @@ def train(epoch,net,net2,optimizer,labeled_trainloader,unlabeled_trainloader):
                 %(args.dataset, args.r, args.noise_mode, epoch, args.num_epochs, batch_idx+1, num_iter, Lx.item(), Lu.item()))
         sys.stdout.flush()
 
-def warmup(epoch,net,optimizer,dataloader):
+def warmup(epoch, net, optimizer, dataloader):
     net.train()
     num_iter = (len(dataloader.dataset)//dataloader.batch_size)+1
     for batch_idx, data in enumerate(dataloader):
@@ -164,7 +155,7 @@ def warmup(epoch,net,optimizer,dataloader):
                 %(args.dataset, args.r, args.noise_mode, epoch, args.num_epochs, batch_idx+1, num_iter, loss.item()))
         sys.stdout.flush()
 
-def test(epoch,net1,net2):
+def test(epoch, net1, net2):
     net1.eval()
     net2.eval()
     correct = 0
@@ -184,9 +175,90 @@ def test(epoch,net1,net2):
     test_log.write('Epoch:%d   Accuracy:%.2f\n'%(epoch,acc))
     test_log.flush()  
 
-def eval_train(model,all_loss):    
+# Implementation of Otsu's algorithm for thresholding
+def otsu_thresholding(data):
+    """Apply Otsu's thresholding algorithm to find optimal threshold"""
+    data = data.cpu().numpy()
+    data_range = np.max(data) - np.min(data)
+    bins = int(min(100, data_range * 100))  # Ensure reasonable number of bins
+    if bins < 2:  # If data range is too small
+        return np.median(data)
+    
+    hist, bin_edges = np.histogram(data, bins=bins, density=True)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    
+    # Compute cumulative mean and variance
+    weight1 = np.cumsum(hist)
+    weight2 = np.cumsum(hist[::-1])[::-1]
+    
+    # Avoid division by zero
+    weight1[weight1 == 0] = 1e-10
+    weight2[weight2 == 0] = 1e-10
+    
+    mean1 = np.cumsum(hist * bin_centers) / weight1
+    mean2 = (np.cumsum((hist * bin_centers)[::-1]) / weight2[::-1])[::-1]
+    
+    # Compute between-class variance
+    variance = weight1[:-1] * weight2[1:] * (mean1[:-1] - mean2[1:]) ** 2
+    
+    # Find the threshold that maximizes the between-class variance
+    idx = np.argmax(variance)
+    threshold = bin_centers[idx]
+    
+    return threshold
+
+# New function for PASS (Peer-Agreement based Sample Selection)
+def pass_selection(net1, net2, eval_loader):
+    """
+    Calculate sample selection based on peer agreement
+    
+    Args:
+        net1, net2: Two peer networks used for selection
+        eval_loader: Data loader for evaluation
+    
+    Returns:
+        prob: Probability mask for clean samples (1 for clean, 0 for noisy)
+    """
+    net1.eval()
+    net2.eval()
+    
+    # Initialize arrays to store results
+    agreement_scores = []
+    indices_list = []
+    
+    with torch.no_grad():
+        for batch_idx, (inputs, targets, index) in enumerate(eval_loader):
+            inputs, targets = inputs.cuda(), targets.cuda()
+            
+            # Get predictions from both networks
+            outputs1 = torch.softmax(net1(inputs), dim=1)
+            outputs2 = torch.softmax(net2(inputs), dim=1)
+            
+            # Calculate cosine similarity (agreement) between predictions
+            similarity = F.cosine_similarity(outputs1, outputs2, dim=1)
+            
+            # Store results
+            agreement_scores.extend(similarity.cpu().tolist())
+            indices_list.extend(index.tolist())
+    
+    # Convert to numpy arrays
+    agreement_scores = np.array(agreement_scores)
+    indices_list = np.array(indices_list)
+    
+    # Apply Otsu's algorithm to find the optimal threshold
+    threshold = otsu_thresholding(torch.tensor(agreement_scores))
+    
+    # Create a probability mask based on the threshold (1 for clean, 0 for noisy)
+    prob = np.zeros(50000)  # Initialize with all noisy
+    prob[indices_list] = (agreement_scores >= threshold).astype(float)
+    
+    return torch.FloatTensor(prob)
+
+def eval_train(model, all_loss):
+    """Original DivideMix sample selection using GMM"""
     model.eval()
     losses = torch.zeros(50000)    
+    
     with torch.no_grad():
         for batch_idx, (inputs, targets, index) in enumerate(eval_loader):
             inputs, targets = inputs.cuda(), targets.cuda() 
@@ -205,11 +277,16 @@ def eval_train(model,all_loss):
         input_loss = losses.reshape(-1,1)
     
     # fit a two-component GMM to the loss
-    gmm = GaussianMixture(n_components=2,max_iter=10,tol=1e-2,reg_covar=5e-4)
-    gmm.fit(input_loss)
-    prob = gmm.predict_proba(input_loss) 
-    prob = prob[:,gmm.means_.argmin()]         
-    return prob,all_loss
+    try:
+        gmm = GaussianMixture(n_components=2, max_iter=10, tol=1e-2, reg_covar=5e-4)
+        gmm.fit(input_loss)
+        prob = gmm.predict_proba(input_loss) 
+        prob = prob[:,gmm.means_.argmin()]  
+    except Exception as e:
+        print(f"GMM fitting failed: {e}")
+        # Fallback to a simple threshold
+        prob = 1.0 - (losses / losses.max())       
+    return prob, all_loss
 
 def linear_rampup(current, warm_up, rampup_length=16):
     current = np.clip((current-warm_up) / rampup_length, 0.0, 1.0)
@@ -234,8 +311,14 @@ def create_model():
     model = model.cuda()
     return model
 
-# Wrap the main training loop in a function
+# Wrap the main training loop with PASS support
 def run_dividemix(args):
+    global test_log, eval_loader, test_loader, warm_up, criterion, CE, CEloss, conf_penalty
+
+    # Create model directory
+    if not os.path.exists('./checkpoint'):
+        os.makedirs('./checkpoint')
+
     # Create log files
     stats_log = open('./checkpoint/%s_%.1f_%s'%(args.dataset,args.r,args.noise_mode)+'_stats.txt','w') 
     test_log = open('./checkpoint/%s_%.1f_%s'%(args.dataset,args.r,args.noise_mode)+'_acc.txt','w')     
@@ -251,18 +334,30 @@ def run_dividemix(args):
     print('| Building net')
     net1 = create_model()
     net2 = create_model()
+    
+    # For PASS, we need a third model
+    if args.use_pass:
+        net3 = create_model()
+        print('| Using PASS with 3 networks')
+    else:
+        net3 = None
+        print('| Using standard DivideMix with 2 networks')
+    
     cudnn.benchmark = True
 
     criterion = SemiLoss()
     optimizer1 = optim.SGD(net1.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
     optimizer2 = optim.SGD(net2.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+    
+    if args.use_pass:
+        optimizer3 = optim.SGD(net3.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
 
     CE = nn.CrossEntropyLoss(reduction='none')
     CEloss = nn.CrossEntropyLoss()
     if args.noise_mode=='asym':
         conf_penalty = NegEntropy()
 
-    all_loss = [[],[]] # save the history of losses from two networks
+    all_loss = [[],[],[]] if args.use_pass else [[],[]]  # save the history of losses from networks
 
     for epoch in range(args.num_epochs+1):   
         lr=args.lr
@@ -271,63 +366,69 @@ def run_dividemix(args):
         for param_group in optimizer1.param_groups:
             param_group['lr'] = lr       
         for param_group in optimizer2.param_groups:
-            param_group['lr'] = lr          
+            param_group['lr'] = lr
+        if args.use_pass:
+            for param_group in optimizer3.param_groups:
+                param_group['lr'] = lr
+                
         test_loader = loader.run('test')
         eval_loader = loader.run('eval_train')   
         
-        if epoch<warm_up:       
+        if epoch < warm_up:       
             warmup_trainloader = loader.run('warmup')
             print('Warmup Net1')
-            warmup(epoch,net1,optimizer1,warmup_trainloader)    
+            warmup(epoch, net1, optimizer1, warmup_trainloader)    
             print('\nWarmup Net2')
-            warmup(epoch,net2,optimizer2,warmup_trainloader) 
-       
-        else:         
-            prob1,all_loss[0]=eval_train(net1,all_loss[0])   
-            prob2,all_loss[1]=eval_train(net2,all_loss[1])          
+            warmup(epoch, net2, optimizer2, warmup_trainloader) 
+            if args.use_pass:
+                print('\nWarmup Net3')
+                warmup(epoch, net3, optimizer3, warmup_trainloader)
+        else:
+            if args.use_pass:
+                # PASS implementation with 3 networks in round-robin fashion
+                # For each network, we use the other two networks to select samples
+                
+                # For Net1: Use Net2 and Net3 to select samples
+                print('Train Net1')
+                prob1 = pass_selection(net2, net3, eval_loader)
+                pred1 = prob1.gt(0.5).float()
+                labeled_trainloader, unlabeled_trainloader = loader.run('train', pred1, prob1)
+                train(epoch, net1, net2, optimizer1, labeled_trainloader, unlabeled_trainloader)
+                
+                # For Net2: Use Net1 and Net3 to select samples
+                print('\nTrain Net2')
+                prob2 = pass_selection(net1, net3, eval_loader)
+                pred2 = prob2.gt(0.5).float()
+                labeled_trainloader, unlabeled_trainloader = loader.run('train', pred2, prob2)
+                train(epoch, net2, net1, optimizer2, labeled_trainloader, unlabeled_trainloader)
+                
+                # For Net3: Use Net1 and Net2 to select samples
+                print('\nTrain Net3')
+                prob3 = pass_selection(net1, net2, eval_loader)
+                pred3 = prob3.gt(0.5).float()
+                labeled_trainloader, unlabeled_trainloader = loader.run('train', pred3, prob3)
+                train(epoch, net3, net1, optimizer3, labeled_trainloader, unlabeled_trainloader)
+                
+                # Test using all networks (can use average of net1 and net3 as in the paper)
+                test(epoch, net1, net3)
+            else:
+                # Original DivideMix implementation
+                prob1, all_loss[0] = eval_train(net1, all_loss[0])   
+                prob2, all_loss[1] = eval_train(net2, all_loss[1])          
                    
-            pred1 = (prob1 > args.p_threshold)      
-            pred2 = (prob2 > args.p_threshold)      
-            
-            print('Train Net1')
-            labeled_trainloader, unlabeled_trainloader = loader.run('train',pred2,prob2) # co-divide
-            train(epoch,net1,net2,optimizer1,labeled_trainloader, unlabeled_trainloader) # train net1  
-            
-            print('\nTrain Net2')
-            labeled_trainloader, unlabeled_trainloader = loader.run('train',pred1,prob1) # co-divide
-            train(epoch,net2,net1,optimizer2,labeled_trainloader, unlabeled_trainloader) # train net2         
+                pred1 = (prob1 > args.p_threshold)      
+                pred2 = (prob2 > args.p_threshold)      
+                
+                print('Train Net1')
+                labeled_trainloader, unlabeled_trainloader = loader.run('train', pred2, prob2) # co-divide
+                train(epoch, net1, net2, optimizer1, labeled_trainloader, unlabeled_trainloader) # train net1  
+                
+                print('\nTrain Net2')
+                labeled_trainloader, unlabeled_trainloader = loader.run('train', pred1, prob1) # co-divide
+                train(epoch, net2, net1, optimizer2, labeled_trainloader, unlabeled_trainloader) # train net2         
 
-        test(epoch,net1,net2)
+                test(epoch, net1, net2)
 
 # If the script is run directly, execute the training
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='PyTorch CIFAR Training')
-    parser.add_argument('--batch_size', default=64, type=int, help='train batchsize') 
-    parser.add_argument('--lr', '--learning_rate', default=0.02, type=float, help='initial learning rate')
-    parser.add_argument('--noise_mode',  default='sym')
-    parser.add_argument('--alpha', default=4, type=float, help='parameter for Beta')
-    parser.add_argument('--lambda_u', default=25, type=float, help='weight for unsupervised loss')
-    parser.add_argument('--p_threshold', default=0.5, type=float, help='clean probability threshold')
-    parser.add_argument('--T', default=0.5, type=float, help='sharpening temperature')
-    parser.add_argument('--num_epochs', default=300, type=int)
-    parser.add_argument('--r', default=0.5, type=float, help='noise ratio')
-    parser.add_argument('--id', default='')
-    parser.add_argument('--seed', default=123)
-    parser.add_argument('--gpuid', default=0, type=int)
-    parser.add_argument('--num_class', default=10, type=int)
-    parser.add_argument('--data_path', default='./data', type=str, help='path to dataset')
-    parser.add_argument('--dataset', default='cifar10', type=str)
-    args = parser.parse_args()
-    
-    if torch.cuda.is_available():
-        torch.cuda.set_device(args.gpuid)
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    
-    # Create checkpoint directory
-    if not os.path.exists('./checkpoint'):
-        os.makedirs('./checkpoint')
-        
     run_dividemix(args)
-

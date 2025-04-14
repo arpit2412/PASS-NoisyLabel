@@ -1,0 +1,21 @@
+# Non-Commercial Research License
+
+Copyright (c) 2023 PASS Authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to use the Software for non-commercial research and educational purposes only, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+2. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+3. The Software shall not be used for any commercial purposes, including but not limited to:
+   a. Integration into commercial products or services
+   b. Use in commercial research or development
+   c. Use in consulting or services provided to third parties for compensation
+
+4. Any redistribution or modification of the Software must include this license and comply with all its terms.
+
+5. If you publish research that used this Software, you must cite the original paper:
+   "PASS: Peer-Agreement based Sample Selection for Training with Instance Dependent Noisy Labels"
+
+For commercial use or licensing, please contact the authors.
