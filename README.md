@@ -129,11 +129,14 @@ To integrate PASS into your own noisy label learning framework:
 If you use this code in your research, please cite the original paper:
 
 ```
-@article{garg2023pass,
-  title={PASS: Peer-Agreement based Sample Selection for Training with Instance Dependent Noisy Labels},
-  author={Garg, Arpit and Nguyen, Cuong and Felix, Rafael and Do, Thanh-Toan and Carneiro, Gustavo},
-  arxiv={https://arxiv.org/pdf/2303.10802},
-  year={2023}
+@article{Garg2025PASS,
+  title   = {PASS: Peer-agreement based sample selection for training with instance dependent noisy labels},
+  author  = {Garg, Arpit and Nguyen, Cuong and Felix, Rafael and Do, Thanh-Toan and Carneiro, Gustavo},
+  journal = {Image and Vision Computing},
+  year    = {2025},
+  pages   = {105877},
+  issn    = {0262-8856},
+  note    = {Available online 16 December 2025}
 }
 ```
 
